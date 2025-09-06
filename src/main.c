@@ -50,51 +50,69 @@ Vec3 vec3_div_scalar(Vec3 v, double s) {
     return r;
 }
 
+double vec3_dot(Vec3 a, Vec3 b) {
+    return a.x*b.x + a.y*b.y + a.z*b.z;
+}
+
 Vec3 at(Ray ray, double t) {
     return vec3_add(ray.origin, scalar_mult_vec3(t, ray.direction));
 }
 
+Col vec3_to_col(Vec3 v) {
+    return (Col){v.x, v.y, v.z};
+}
+
 void print_progress(int bar_width, int progress, int total) {
-    float ratio = (float)progress / total;
+    double ratio = (double)progress / total;
     int pos = bar_width * ratio;
 
     fprintf(stderr, "\r[");
     for (int i = 0; i < bar_width; i++) {
-        if (i <= pos) {
+        if (i < pos)
             fprintf(stderr, "=");
-        } else if (i == pos) {
+        else if (i == pos)
             fprintf(stderr, ">");
-        } else {
+        else
             fprintf(stderr, " ");
-        }
     }
     fprintf(stderr, "] %d%% (%d/%d)", (int)(ratio * 100), progress, total);
 }
 
-void write_pixel(Vec3 pixel) {
-    double r = pixel.x;
-    double g = pixel.y;
-    double b = pixel.z;
-
-    int rb = (int)(255.999 * r);
-    int gb = (int)(255.999 * g);
-    int bb = (int)(255.999 * b);
+void write_pixel(Col pixel) {
+    int rb = (int)(255.999 * pixel.r);
+    int gb = (int)(255.999 * pixel.g);
+    int bb = (int)(255.999 * pixel.b);
 
     printf("%d %d %d\n", rb, gb, bb);
 }
 
-static inline Vec3 ray_color(Ray r) {
+int hit_sphere(Vec3 center, double radius, Ray r) {
+    double a = vec3_dot(r.direction, r.direction);
+    Vec3 oc = vec3_sub(center, r.origin);
+    double b = vec3_dot(
+        scalar_mult_vec3(-2, r.direction),
+        oc
+    );
+    double c = vec3_dot(oc, oc) - radius*radius;
+    return (b*b - 4*a*c) >= 0;
+}
+
+Col ray_color(Ray r) {
+    if (hit_sphere((Vec3){0.0, 0.0, -1.0}, 0.5, r))
+        return (Col){1.0, 0.0, 0.0};
+
     Vec3 unit_direction = vec3_normalize(r.direction);
     double a = 0.5 * (unit_direction.y + 1.0);
-    return vec3_add(
+    Vec3 result = vec3_add(
         scalar_mult_vec3((1.0 - a), (Vec3){1.0, 1.0, 1.0}),
         scalar_mult_vec3(a, (Vec3){0.5, 0.7, 1.0})
     );
+    return vec3_to_col(result);
 }
 
 int main() {
-    double aspect_ratio  = 16.0 / 9.0;
-    int img_width = 400;
+    double aspect_ratio = 16.0 / 9.0;
+    int img_width = 800;
 
     int img_height = (int)(img_width / aspect_ratio);
     if (img_height < 1) img_height = 1;
@@ -125,7 +143,7 @@ int main() {
     printf("P3\n%d %d\n255\n", img_width, img_height);
 
     for (int y = 0; y < img_height; y++) {
-        print_progress(20, y, img_height);
+        print_progress(25, y, img_height);
         for (int x = 0; x < img_width; x++) {
             Vec3 pixel_center = vec3_add(
                 vec3_add(
@@ -137,7 +155,7 @@ int main() {
             Vec3 ray_direction = vec3_sub(pixel_center, camera_center);
             Ray r = (Ray){camera_center, ray_direction};
 
-            Vec3 pixel_color = ray_color(r);
+            Col pixel_color = ray_color(r);
             write_pixel(pixel_color);
         }
     }
