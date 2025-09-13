@@ -1,5 +1,11 @@
 #include <stdio.h>
+#include <stdlib.h>
+#include <stdbool.h>
 #include <math.h>
+
+#define PI 3.1415926535897932385
+
+#define SPHERE2H(obj) ((Hittable){(void*)&obj, &hit_sphere})
 
 typedef struct {
     double x, y, z;
@@ -10,11 +16,41 @@ typedef struct {
 } Col;
 
 typedef struct {
+    Vec3 center;
+    double radius;
+} Sphere;
+
+typedef struct {
+    Vec3 p;
+    Vec3 normal;
+    double t;
+    bool front_face;
+} HitRecord;
+
+typedef struct {
     Vec3 origin, direction;
 } Ray;
 
+typedef struct {
+    void *data;
+    bool (*hit)(void *data, Ray r, double tmin, double tmax, HitRecord *hrec);
+} Hittable;
+
+typedef struct {
+    Hittable *hittables;
+    size_t size, capacity;
+} HittableList;
+
+double d2r(double deg) {
+    return deg * PI / 180.0;
+}
+
 Vec3 vec3_add(Vec3 a, Vec3 b) {
     return (Vec3){a.x + b.x, a.y + b.y, a.z + b.z};
+}
+
+Vec3 vec3_add_scalar(Vec3 v, double s) {
+    return (Vec3){v.x + s, v.y + s, v.z + s};
 }
 
 Vec3 vec3_sub(Vec3 a, Vec3 b) {
@@ -23,6 +59,10 @@ Vec3 vec3_sub(Vec3 a, Vec3 b) {
 
 Vec3 scalar_mult_vec3(double s, Vec3 v) {
     return (Vec3){v.x * s, v.y * s, v.z * s};
+}
+
+double vec3_len_pow2(Vec3 v) {
+    return v.x*v.x + v.y*v.y + v.z*v.z;
 }
 
 double vec3_len(Vec3 v) {
@@ -54,12 +94,69 @@ double vec3_dot(Vec3 a, Vec3 b) {
     return a.x*b.x + a.y*b.y + a.z*b.z;
 }
 
-Vec3 at(Ray ray, double t) {
-    return vec3_add(ray.origin, scalar_mult_vec3(t, ray.direction));
+Vec3 at(Ray r, double t) {
+    return vec3_add(r.origin, scalar_mult_vec3(t, r.direction));
 }
 
 Col vec3_to_col(Vec3 v) {
     return (Col){v.x, v.y, v.z};
+}
+
+void set_face_normal(HitRecord *hrec, Ray r, Vec3 outward_normal) {
+    hrec->front_face = vec3_dot(r.direction, outward_normal) < 0;
+    hrec->normal = hrec->front_face? outward_normal : scalar_mult_vec3(-1, outward_normal);
+}
+
+HittableList hlist_init() {
+    HittableList hlist = {0};
+    hlist.hittables = (Hittable*)calloc(1, sizeof(Hittable));
+    if (hlist.hittables == NULL) {
+        fprintf(stderr, "Failed to init HittableList");
+        return (HittableList){0};
+    }
+    hlist.capacity = 1;
+    return hlist;
+}
+void hlist_resize(HittableList *hlist) {
+    Hittable *temp = realloc(hlist->hittables, sizeof(Hittable)*(hlist->capacity*2));
+    if (temp == NULL) {
+        fprintf(stderr, "Failed to resize HittableList");
+        return;
+    }
+    hlist->hittables = temp;
+    hlist->capacity *= 2;
+}
+void hlist_push(HittableList *hlist, Hittable hittable) {
+    if (hlist->size == hlist->capacity) hlist_resize(hlist);
+    hlist->hittables[hlist->size] = hittable;
+    hlist->size++;
+}
+void hlist_pop(HittableList *hlist) {
+    hlist->hittables[hlist->size-1] = (Hittable){0};
+    hlist->size--;
+}
+void hlist_clear(HittableList *hlist) {
+    for (size_t i = 0; i < hlist->size; i++) hlist->hittables[i] = (Hittable){0};
+    hlist->size = 0;
+}
+void hlist_destroy(HittableList *hlist) {
+    free(hlist);
+}
+bool hlist_hitall(HittableList *hlist, Ray r, double tmin, double tmax, HitRecord *hrec) {
+    HitRecord temp_rec = {0};
+    bool hit_any = false;
+    double closest = tmax;
+
+    for (size_t i = 0; i < hlist->size; i++) {
+        if (hlist->hittables[i].data == NULL) continue;
+        if (hlist->hittables[i].hit(hlist->hittables[i].data, r, tmin, closest, &temp_rec)) {
+            hrec = &temp_rec;
+            hit_any = true;
+            closest = temp_rec.t;
+        }
+    }
+
+    return hit_any;
 }
 
 void print_progress(int bar_width, int progress, int total) {
@@ -86,28 +183,49 @@ void write_pixel(Col pixel) {
     printf("%d %d %d\n", rb, gb, bb);
 }
 
-int hit_sphere(Vec3 center, double radius, Ray r) {
-    double a = vec3_dot(r.direction, r.direction);
-    Vec3 oc = vec3_sub(center, r.origin);
-    double b = vec3_dot(
-        scalar_mult_vec3(-2, r.direction),
-        oc
-    );
-    double c = vec3_dot(oc, oc) - radius*radius;
-    return (b*b - 4*a*c) >= 0;
+bool hit_sphere(void *data, Ray r, double tmin, double tmax, HitRecord *hrec) {
+    Sphere *sphere = (Sphere*)data;
+
+    double a = vec3_len_pow2(r.direction);
+    Vec3 oc = vec3_sub(sphere->center, r.origin);
+    double h = vec3_dot(r.direction, oc);
+    double c = vec3_len_pow2(oc) - sphere->radius*sphere->radius;
+    double discriminant = h*h - a*c;
+
+    if (discriminant < 0) return false;
+    
+    double sqrtd = sqrt(discriminant);
+
+    double root = (h - sqrtd) / a;
+    if (root <= tmin || tmax <= root) {
+        root = (h + sqrtd) / a;
+        if (root <= tmin || tmax <= root) return false;
+    }
+
+    hrec->t = root;
+    hrec->p = at(r, hrec->t);
+    Vec3 outward_normal = vec3_div_scalar(vec3_sub(hrec->p, sphere->center), sphere->radius);
+    set_face_normal(hrec, r, outward_normal);
+
+    return true;
 }
 
-Col ray_color(Ray r) {
-    if (hit_sphere((Vec3){0.0, 0.0, -1.0}, 0.5, r))
-        return (Col){1.0, 0.0, 0.0};
+Col ray_color(Ray r, HittableList *hlist) {
+    HitRecord hrec;
+    if (hlist_hitall(hlist, r, 0, INFINITY, &hrec)) {
+        return vec3_to_col(scalar_mult_vec3(
+            0.5,
+            vec3_add_scalar(hrec.normal, 1)
+        )); 
+    }
 
-    Vec3 unit_direction = vec3_normalize(r.direction);
-    double a = 0.5 * (unit_direction.y + 1.0);
-    Vec3 result = vec3_add(
-        scalar_mult_vec3((1.0 - a), (Vec3){1.0, 1.0, 1.0}),
+    return (Col){0};
+    /*Vec3 unit_direction = vec3_normalize(r.direction);
+    double a = 0.5*(unit_direction.y + 1.0);
+    return vec3_to_col(vec3_add(
+        scalar_mult_vec3(1.0-a, (Vec3){1.0, 1.0, 1.0}),
         scalar_mult_vec3(a, (Vec3){0.5, 0.7, 1.0})
-    );
-    return vec3_to_col(result);
+    ));*/
 }
 
 int main() {
@@ -116,6 +234,9 @@ int main() {
 
     int img_height = (int)(img_width / aspect_ratio);
     if (img_height < 1) img_height = 1;
+
+    HittableList hlist = hlist_init();
+    hlist_push(&hlist, SPHERE2H(((Sphere){(Vec3){0, 0, -1}, 0.5})));
 
     double focal_len = 1.0;
     double viewport_height = 2.0;
@@ -155,7 +276,7 @@ int main() {
             Vec3 ray_direction = vec3_sub(pixel_center, camera_center);
             Ray r = (Ray){camera_center, ray_direction};
 
-            Col pixel_color = ray_color(r);
+            Col pixel_color = ray_color(r, &hlist);
             write_pixel(pixel_color);
         }
     }
