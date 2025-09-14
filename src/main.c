@@ -2,17 +2,30 @@
 #include <stdlib.h>
 #include <stdbool.h>
 #include <math.h>
+#include <time.h>
 
 #define PI 3.1415926535897932385
 
 #define SPHERE2H(obj) ((Hittable){(void*)&obj, &hit_sphere})
 
 #define ASPECT_RATIO (16.0 / 9.0)
-#define IMG_WIDTH 800
+#define IMG_WIDTH 1920
+#define SAMPLES_PER_PIXEL 16
+
+
+double dranddoub() {
+    return rand() / (RAND_MAX + 1.0);
+}
+double randdoub(double min, double max) {
+    return min + (max-min)*dranddoub();
+}
 
 
 typedef struct {
-    double x, y, z;
+    union {
+        struct { double x, y, z; };
+        struct { double r, g, b; };
+    };
 } Vec3;
 
 Vec3 vec3_add(Vec3 a, Vec3 b) {
@@ -65,15 +78,26 @@ double vec3_dot(Vec3 a, Vec3 b) {
 }
 
 
-
-typedef struct {
-    double r, g, b;
-} Col;
-
-Col vec3_to_col(Vec3 v) {
-    return (Col){v.x, v.y, v.z};
+Vec3 vec3_drandom() {
+    return (Vec3){dranddoub(), dranddoub(), dranddoub()};
+}
+Vec3 vec3_random(double min, double max) {
+    return (Vec3){randdoub(min,max), randdoub(min,max), randdoub(min,max)};
 }
 
+Vec3 vec3_rand_norm() {
+    while (true) {
+        Vec3 p = vec3_random(-1, 1);
+        double len2 = vec3_len_pow2(p);
+        if (1e-160 < len2 && len2 <= 1) return vec3_div_scalar(p, sqrt(len2));
+    }
+}
+
+Vec3 vec3_random_on_hemisphere(Vec3 normal) {
+    Vec3 on_unit_sphere = vec3_rand_norm();
+    if (vec3_dot(on_unit_sphere, normal) > 0.0) return on_unit_sphere;
+    else return scalar_mult_vec3(-1.0, on_unit_sphere);
+}
 
 
 typedef struct {
@@ -94,6 +118,12 @@ typedef struct {
 #define range_size(r) (r.max - r.min)
 #define range_contains(r, x) (r.min <= x && x <= r.max)
 #define range_surrounds(r, x) (r.min < x && x < r.max)
+
+double clamp(Range r, double x) {
+    if (x < r.min) return r.min;
+    if (x > r.max) return r.max;
+    return x;
+}
 
 
 
@@ -147,7 +177,8 @@ void hlist_clear(HittableList *hlist) {
     hlist->size = 0;
 }
 void hlist_destroy(HittableList *hlist) {
-    free(hlist);
+    free(hlist->hittables);
+    hlist = (HittableList*){0};
 }
 bool hlist_hitall(HittableList *hlist, Ray r, Range t, HitRecord *hrec) {
     HitRecord temp_rec = {0};
@@ -157,7 +188,7 @@ bool hlist_hitall(HittableList *hlist, Ray r, Range t, HitRecord *hrec) {
     for (size_t i = 0; i < hlist->size; i++) {
         if (hlist->hittables[i].data == NULL) continue;
         if (hlist->hittables[i].hit(hlist->hittables[i].data, r, (Range){t.min, closest}, &temp_rec)) {
-            hrec = &temp_rec;
+            *hrec = temp_rec;
             hit_any = true;
             closest = temp_rec.t;
         }
@@ -171,6 +202,8 @@ bool hlist_hitall(HittableList *hlist, Ray r, Range t, HitRecord *hrec) {
 typedef struct {
     double aspect_ratio;
     int img_width, img_height;
+    int samples_per_pixel;
+    double pixel_samples_scale;
     Vec3 center, pixel00_loc;
     Vec3 pixel_delta_u, pixel_delta_v;
 } Camera;
@@ -180,6 +213,8 @@ Camera cam_init() {
 
     cam.aspect_ratio = ASPECT_RATIO;
     cam.img_width = IMG_WIDTH;
+    cam.samples_per_pixel = SAMPLES_PER_PIXEL;
+    cam.pixel_samples_scale = 1.0 / cam.samples_per_pixel;
 
     cam.img_height = (int)(cam.img_width / cam.aspect_ratio);
     if (cam.img_height < 1) cam.img_height = 1;
@@ -211,16 +246,22 @@ Camera cam_init() {
     return cam;
 }
 
-Col ray_color(Ray r, HittableList *hlist) {
+Vec3 ray_color(Ray r, HittableList *hlist) {
     HitRecord hrec;
     if (hlist_hitall(hlist, r, (Range){0, INFINITY}, &hrec)) {
-        return vec3_to_col(scalar_mult_vec3(
+        Vec3 direction = vec3_random_on_hemisphere(hrec.normal);
+        return scalar_mult_vec3(
             0.5,
-            vec3_add_scalar(hrec.normal, 1)
-        )); 
+            (ray_color((Ray){hrec.p, direction}, hlist))
+        ); 
     }
 
-    return (Col){0};
+    Vec3 unit_direction = vec3_normalize(r.direction);
+    double a = 0.5*(unit_direction.y + 1.0);
+    return vec3_add(
+        scalar_mult_vec3((1.0-a), (Vec3){1, 1, 1}),
+        scalar_mult_vec3(a, (Vec3){0.5, 0.7, 1.0})
+    );
 }
 
 void print_progress(int bar_width, int progress, int total) {
@@ -239,32 +280,46 @@ void print_progress(int bar_width, int progress, int total) {
     fprintf(stderr, "] %d%% (%d/%d)", (int)(ratio * 100), progress, total);
 }
 
-void write_pixel(Col pixel) {
-    int rb = (int)(255.999 * pixel.r);
-    int gb = (int)(255.999 * pixel.g);
-    int bb = (int)(255.999 * pixel.b);
+void write_pixel(Vec3 pixel) {
+    Range intensity = {0.0, 0.999};
+    int rb = (int)(256 * clamp(intensity, pixel.r));
+    int gb = (int)(256 * clamp(intensity, pixel.g));
+    int bb = (int)(256 * clamp(intensity, pixel.b));
 
     printf("%d %d %d\n", rb, gb, bb);
 }
 
+Vec3 sample_square() {
+    return (Vec3){randdoub(0, 1)-0.5, randdoub(0, 1)-0.5, 0.0};
+}
+
+Ray get_ray(Camera *cam, int x, int y) {
+    Vec3 offset = sample_square();
+    Vec3 pixel_sample = vec3_add(
+        vec3_add(
+            cam->pixel00_loc,
+            scalar_mult_vec3(x + offset.x, cam->pixel_delta_u)
+        ),
+        scalar_mult_vec3(y + offset.y, cam->pixel_delta_v)
+    );
+    Vec3 direction = vec3_sub(pixel_sample, cam->center);
+    return (Ray){cam->center, direction};
+}
+
 void render(Camera *cam, HittableList *hlist) {
+    fprintf(stderr, "Rendering %dx%d | %d samples\n", cam->img_width, cam->img_height, cam->samples_per_pixel);
+
     printf("P3\n%d %d\n255\n", cam->img_width, cam->img_height);
 
     for (int y = 0; y < cam->img_height; y++) {
         print_progress(25, y, cam->img_height);
         for (int x = 0; x < cam->img_width; x++) {
-            Vec3 pixel_center = vec3_add(
-                vec3_add(
-                    cam->pixel00_loc,
-                    scalar_mult_vec3(x, cam->pixel_delta_u)
-                ),
-                scalar_mult_vec3(y, cam->pixel_delta_v)
-            );
-            Vec3 ray_direction = vec3_sub(pixel_center, cam->center);
-            Ray r = (Ray){cam->center, ray_direction};
-
-            Col pixel_color = ray_color(r, hlist);
-            write_pixel(pixel_color);
+            Vec3 pixel_color = {0};
+            for (int sample = 0; sample < cam->samples_per_pixel; sample++) {
+                Ray r = get_ray(cam, x, y);
+                pixel_color = vec3_add(pixel_color, ray_color(r, hlist));
+            }
+            write_pixel(scalar_mult_vec3(cam->pixel_samples_scale, pixel_color));
         }
     }
 
@@ -314,11 +369,15 @@ bool hit_sphere(void *data, Ray r, Range t, HitRecord *hrec) {
 }
 
 int main() {
+    srand(time(NULL));
+
     HittableList hlist = hlist_init();
     hlist_push(&hlist, SPHERE2H(((Sphere){(Vec3){0, 0, -1}, 0.5})));
+    hlist_push(&hlist, SPHERE2H(((Sphere){(Vec3){0, -100.5, -1}, 100})));
 
     Camera cam = cam_init();
     render(&cam, &hlist);
     
+    hlist_destroy(&hlist);
     return 0;
 }

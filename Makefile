@@ -7,7 +7,7 @@ BINDIR = bin
 SRC = $(wildcard $(SRCDIR)/*.c)
 OBJ = $(SRC:$(SRCDIR)/%.c=$(BLDDIR)/%.o)
 
-CFLAGS = -O3 -Wall -Wextra -Wno-unused-but-set-parameter
+CFLAGS = -O3 -Wall -Wextra -Wno-unused-but-set-parameter -Wno-missing-braces
 LDFLAGS = 
 
 TARGET = $(BINDIR)/a
