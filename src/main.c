@@ -8,9 +8,38 @@
 
 #define SPHERE2H(obj) ((Hittable){(void*)&obj, &hit_sphere})
 
+#define LAMBERTIAN2M(mat) ((Material){(void*)&mat, &scatter_lambertian})
+#define METAL2M(mat) ((Material){(void*)&mat, &scatter_metal})
+
 #define ASPECT_RATIO (16.0 / 9.0)
+#define VFOV 60
+
+#define TESTP
+#ifdef TESTP
+#define IMG_WIDTH 640
+#define SAMPLES_PER_PIXEL 4
+#define MAX_DEPTH 6
+#endif
+#ifdef MIDP
+#define IMG_WIDTH 1080
+#define SAMPLES_PER_PIXEL 32
+#define MAX_DEPTH 16
+#endif
+#ifdef HIGHP
 #define IMG_WIDTH 1920
-#define SAMPLES_PER_PIXEL 16
+#define SAMPLES_PER_PIXEL 128
+#define MAX_DEPTH 64
+#endif
+#ifdef ULTRAP
+#define IMG_WIDTH 2560
+#define SAMPLES_PER_PIXEL 1024
+#define MAX_DEPTH 256
+#endif
+#ifdef CUSTOMP
+#define IMG_WIDTH 800
+#define SAMPLES_PER_PIXEL 64
+#define MAX_DEPTH 16
+#endif
 
 
 double dranddoub() {
@@ -18,6 +47,10 @@ double dranddoub() {
 }
 double randdoub(double min, double max) {
     return min + (max-min)*dranddoub();
+}
+
+double d2r(double deg) {
+    return deg * PI / 180.0;
 }
 
 
@@ -77,6 +110,17 @@ double vec3_dot(Vec3 a, Vec3 b) {
     return a.x*b.x + a.y*b.y + a.z*b.z;
 }
 
+Vec3 vec3_cross(Vec3 a, Vec3 b) {
+    return (Vec3){
+        a.y*b.z - a.z*b.y,
+        a.z*b.x - a.x*b.z,
+        a.x*b.y - a.y*b.x
+    };
+}
+
+bool vec3_near_zero(Vec3 v) {
+    return (fabs(v.x) < 1e-8) && (fabs(v.y) < 1e-8) && (fabs(v.z) < 1e8);
+}
 
 Vec3 vec3_drandom() {
     return (Vec3){dranddoub(), dranddoub(), dranddoub()};
@@ -99,15 +143,13 @@ Vec3 vec3_random_on_hemisphere(Vec3 normal) {
     else return scalar_mult_vec3(-1.0, on_unit_sphere);
 }
 
+Vec3 vec3_reflect(Vec3 v, Vec3 n) {
+	return vec3_sub(v, scalar_mult_vec3(2*vec3_dot(v, n), n));	
+}
 
-typedef struct {
-    Vec3 center;
-    double radius;
-} Sphere;
-
-typedef struct {
-    Vec3 origin, direction;
-} Ray;
+Vec3 vec3_hadamard(Vec3 a, Vec3 b) {
+    return (Vec3){a.x*b.x, a.y*b.y, a.z*b.z};
+}
 
 
 
@@ -135,8 +177,17 @@ typedef struct {
 } HitRecord;
 
 typedef struct {
+    Vec3 origin, direction;
+} Ray;
+
+typedef struct {
+	void *data;
+	bool (*scatter)(void *data, Ray r, HitRecord *hrec, Vec3 *atten, Ray *scattered);
+} Material;
+
+typedef struct {
     void *data;
-    bool (*hit)(void *data, Ray r, Range t, HitRecord *hrec);
+    bool (*hit)(void *data, Ray r, Range t, HitRecord *hrec, Material *mat);
 } Hittable;
 
 typedef struct {
@@ -180,14 +231,14 @@ void hlist_destroy(HittableList *hlist) {
     free(hlist->hittables);
     hlist = (HittableList*){0};
 }
-bool hlist_hitall(HittableList *hlist, Ray r, Range t, HitRecord *hrec) {
+bool hlist_hitall(HittableList *hlist, Ray r, Range t, HitRecord *hrec, Material *mat) {
     HitRecord temp_rec = {0};
     bool hit_any = false;
     double closest = t.max;
 
     for (size_t i = 0; i < hlist->size; i++) {
         if (hlist->hittables[i].data == NULL) continue;
-        if (hlist->hittables[i].hit(hlist->hittables[i].data, r, (Range){t.min, closest}, &temp_rec)) {
+        if (hlist->hittables[i].hit(hlist->hittables[i].data, r, (Range){t.min, closest}, &temp_rec, mat)) {
             *hrec = temp_rec;
             hit_any = true;
             closest = temp_rec.t;
@@ -198,13 +249,49 @@ bool hlist_hitall(HittableList *hlist, Ray r, Range t, HitRecord *hrec) {
 }
 
 
+typedef struct {
+	Vec3 albedo;
+} Lambertian;
+
+bool scatter_lambertian(void *data, Ray r, HitRecord *hrec, Vec3 *attenuation, Ray *scattered) {
+	Lambertian *mat = (Lambertian*)data;
+	Vec3 dir = vec3_add(hrec->normal, vec3_rand_norm());
+	if (vec3_near_zero(dir)) dir = hrec->normal;
+	*scattered = (Ray){hrec->p, dir};
+	*attenuation = mat->albedo;
+	return 1; 
+}
 
 typedef struct {
-    double aspect_ratio;
+	Vec3 albedo;
+    double roughness;
+} Metal;
+
+bool scatter_metal(void *data, Ray r, HitRecord *hrec, Vec3 *attenuation, Ray *scattered) {
+	Metal *mat = (Metal*)data;
+	Vec3 reflected = vec3_reflect(r.direction, hrec->normal);
+    reflected = vec3_add(vec3_normalize(reflected), scalar_mult_vec3(mat->roughness, vec3_rand_norm()));
+	*scattered = (Ray){hrec->p, reflected};
+	*attenuation = mat->albedo;
+	return vec3_dot(scattered->direction, hrec->normal) > 0;
+}
+
+
+typedef struct {
+    Vec3 center;
+    double radius;
+    Material mat;
+} Sphere;
+
+
+typedef struct {
+    double aspect_ratio, vfov;
     int img_width, img_height;
-    int samples_per_pixel;
+    int samples_per_pixel, max_depth;
     double pixel_samples_scale;
-    Vec3 center, pixel00_loc;
+    Vec3 lookfrom, lookat, lookup;
+    Vec3 u, v, w;
+    Vec3 pixel00_loc;
     Vec3 pixel_delta_u, pixel_delta_v;
 } Camera;
 
@@ -212,28 +299,36 @@ Camera cam_init() {
     Camera cam = {0};
 
     cam.aspect_ratio = ASPECT_RATIO;
+    cam.vfov = VFOV;
     cam.img_width = IMG_WIDTH;
     cam.samples_per_pixel = SAMPLES_PER_PIXEL;
     cam.pixel_samples_scale = 1.0 / cam.samples_per_pixel;
+    cam.max_depth = MAX_DEPTH;
 
     cam.img_height = (int)(cam.img_width / cam.aspect_ratio);
     if (cam.img_height < 1) cam.img_height = 1;
 
-    cam.center = (Vec3){0.0, 0.0, 0.0};
+    cam.lookfrom = (Vec3){0, 0, 0};
+    cam.lookat = (Vec3){0, 0, -1};
+    cam.lookup = (Vec3){0, -1, 0};
 
-    double focal_len = 1.0;
-    double viewport_height = 2.0;
+    double focal_len = vec3_len(vec3_sub(cam.lookfrom, cam.lookat));
+    double viewport_height = 2.0 * tan(d2r(cam.vfov)/2.0) * focal_len;
     double viewport_width = viewport_height * ((double)cam.img_width / cam.img_height);
 
-    Vec3 viewport_u = (Vec3){viewport_width, 0.0, 0.0};
-    Vec3 viewport_v = (Vec3){0.0, -viewport_height, 0.0};
+    cam.w = vec3_normalize(vec3_sub(cam.lookfrom, cam.lookat));
+    cam.u = vec3_normalize(vec3_cross(cam.lookup, cam.w));
+    cam.v = vec3_cross(cam.w, cam.u);
+
+    Vec3 viewport_u = scalar_mult_vec3(viewport_width, cam.u);
+    Vec3 viewport_v = scalar_mult_vec3(viewport_height, cam.v);
 
     cam.pixel_delta_u = vec3_div_scalar(viewport_u, cam.img_width);
     cam.pixel_delta_v = vec3_div_scalar(viewport_v, cam.img_height);
 
     Vec3 viewport_upper_left = vec3_sub(
         vec3_sub(
-            vec3_sub(cam.center, (Vec3){0.0, 0.0, focal_len}),
+            vec3_sub(cam.lookfrom, scalar_mult_vec3(focal_len, cam.w)), // todo camera direction
             vec3_div_scalar(viewport_u, 2)
         ),
         vec3_div_scalar(viewport_v, 2)
@@ -246,14 +341,18 @@ Camera cam_init() {
     return cam;
 }
 
-Vec3 ray_color(Ray r, HittableList *hlist) {
-    HitRecord hrec;
-    if (hlist_hitall(hlist, r, (Range){0, INFINITY}, &hrec)) {
-        Vec3 direction = vec3_random_on_hemisphere(hrec.normal);
-        return scalar_mult_vec3(
-            0.5,
-            (ray_color((Ray){hrec.p, direction}, hlist))
-        ); 
+Vec3 ray_color(Ray r, int depth, HittableList *hlist) {
+    if (depth <= 0) return (Vec3){0};
+
+    HitRecord hrec = {0};
+    Material mat;
+    if (hlist_hitall(hlist, r, (Range){0.001, INFINITY}, &hrec, &mat)) {
+        Ray scattered;
+        Vec3 attenuation;
+        if (mat.scatter(mat.data, r, &hrec, &attenuation, &scattered)) {
+            return vec3_hadamard(attenuation, ray_color(scattered, depth-1, hlist));
+        }
+        return (Vec3){0, 0, 0};
     }
 
     Vec3 unit_direction = vec3_normalize(r.direction);
@@ -280,11 +379,19 @@ void print_progress(int bar_width, int progress, int total) {
     fprintf(stderr, "] %d%% (%d/%d)", (int)(ratio * 100), progress, total);
 }
 
-void write_pixel(Vec3 pixel) {
+double linear_to_gamma(double linear) {
+    if (linear > 0) return sqrt(linear);
+    return 0;
+}
+void write_pixel(Vec3 pixel) {   
+    double r = linear_to_gamma(pixel.r);
+    double g = linear_to_gamma(pixel.g);
+    double b = linear_to_gamma(pixel.b);
+
     Range intensity = {0.0, 0.999};
-    int rb = (int)(256 * clamp(intensity, pixel.r));
-    int gb = (int)(256 * clamp(intensity, pixel.g));
-    int bb = (int)(256 * clamp(intensity, pixel.b));
+    int rb = (int)(256 * clamp(intensity, r));
+    int gb = (int)(256 * clamp(intensity, g));
+    int bb = (int)(256 * clamp(intensity, b));
 
     printf("%d %d %d\n", rb, gb, bb);
 }
@@ -302,12 +409,12 @@ Ray get_ray(Camera *cam, int x, int y) {
         ),
         scalar_mult_vec3(y + offset.y, cam->pixel_delta_v)
     );
-    Vec3 direction = vec3_sub(pixel_sample, cam->center);
-    return (Ray){cam->center, direction};
+    Vec3 direction = vec3_sub(pixel_sample, cam->lookfrom);
+    return (Ray){cam->lookfrom, direction};
 }
 
 void render(Camera *cam, HittableList *hlist) {
-    fprintf(stderr, "Rendering %dx%d | %d samples\n", cam->img_width, cam->img_height, cam->samples_per_pixel);
+    fprintf(stderr, "Rendering %dx%d | %d samples | %d depth\n", cam->img_width, cam->img_height, cam->samples_per_pixel, cam->max_depth);
 
     printf("P3\n%d %d\n255\n", cam->img_width, cam->img_height);
 
@@ -317,7 +424,7 @@ void render(Camera *cam, HittableList *hlist) {
             Vec3 pixel_color = {0};
             for (int sample = 0; sample < cam->samples_per_pixel; sample++) {
                 Ray r = get_ray(cam, x, y);
-                pixel_color = vec3_add(pixel_color, ray_color(r, hlist));
+                pixel_color = vec3_add(pixel_color, ray_color(r, cam->max_depth, hlist));
             }
             write_pixel(scalar_mult_vec3(cam->pixel_samples_scale, pixel_color));
         }
@@ -328,10 +435,6 @@ void render(Camera *cam, HittableList *hlist) {
 
 
 
-double d2r(double deg) {
-    return deg * PI / 180.0;
-}
-
 Vec3 at(Ray r, double t) {
     return vec3_add(r.origin, scalar_mult_vec3(t, r.direction));
 }
@@ -341,7 +444,7 @@ void set_face_normal(HitRecord *hrec, Ray r, Vec3 outward_normal) {
     hrec->normal = hrec->front_face? outward_normal : scalar_mult_vec3(-1, outward_normal);
 }
 
-bool hit_sphere(void *data, Ray r, Range t, HitRecord *hrec) {
+bool hit_sphere(void *data, Ray r, Range t, HitRecord *hrec, Material *mat) {
     Sphere *sphere = (Sphere*)data;
 
     double a = vec3_len_pow2(r.direction);
@@ -364,6 +467,7 @@ bool hit_sphere(void *data, Ray r, Range t, HitRecord *hrec) {
     hrec->p = at(r, hrec->t);
     Vec3 outward_normal = vec3_div_scalar(vec3_sub(hrec->p, sphere->center), sphere->radius);
     set_face_normal(hrec, r, outward_normal);
+    *mat = sphere->mat;
 
     return true;
 }
@@ -371,9 +475,30 @@ bool hit_sphere(void *data, Ray r, Range t, HitRecord *hrec) {
 int main() {
     srand(time(NULL));
 
+    Lambertian diffr = {(Vec3){1, 0, 0}};
+	Lambertian diffb = {(Vec3){0, 0, 1}};
+	Lambertian diffg = {(Vec3){0, 1, 0}};
+
+	Metal met = {(Vec3){0.9, 0.9, 0.9}, 0.3};
+
+	Sphere obj0 = {
+		(Vec3){-1, 0, -1}, 0.5, LAMBERTIAN2M(diffr)
+	};
+	Sphere obj1 = {
+		(Vec3){0, -100.5, -1}, 100, LAMBERTIAN2M(diffb)
+	};
+	Sphere obj3 = {
+		(Vec3){1, 0, -1}, 0.5, LAMBERTIAN2M(diffg)
+	};
+	Sphere obj2 = {
+		(Vec3){0, 0.25, -1.4}, 0.5, METAL2M(met)
+	};
+
     HittableList hlist = hlist_init();
-    hlist_push(&hlist, SPHERE2H(((Sphere){(Vec3){0, 0, -1}, 0.5})));
-    hlist_push(&hlist, SPHERE2H(((Sphere){(Vec3){0, -100.5, -1}, 100})));
+    hlist_push(&hlist, SPHERE2H(obj0));
+    hlist_push(&hlist, SPHERE2H(obj1));
+    hlist_push(&hlist, SPHERE2H(obj2));
+    hlist_push(&hlist, SPHERE2H(obj3));
 
     Camera cam = cam_init();
     render(&cam, &hlist);
