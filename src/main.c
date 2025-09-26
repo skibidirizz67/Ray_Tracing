@@ -7,9 +7,11 @@
 #define PI 3.1415926535897932385
 
 #define SPHERE2H(obj) ((Hittable){(void*)&obj, &hit_sphere})
+#define BOX2H(obj) ((Hittable){(void*)&obj, &hit_box})
 
 #define LAMBERTIAN2M(mat) ((Material){(void*)&mat, &scatter_lambertian})
 #define METAL2M(mat) ((Material){(void*)&mat, &scatter_metal})
+#define DIELECTRIC2M(mat) ((Material){(void*)&mat, &scatter_dielectric})
 
 #define ASPECT_RATIO (16.0 / 9.0)
 #define VFOV 60
@@ -147,6 +149,16 @@ Vec3 vec3_reflect(Vec3 v, Vec3 n) {
 	return vec3_sub(v, scalar_mult_vec3(2*vec3_dot(v, n), n));	
 }
 
+Vec3 vec3_refract(Vec3 uv, Vec3 n, double ri) {
+    double cos_theta = fmin(vec3_dot(
+        scalar_mult_vec3(-1, uv),
+        n
+    ), 1.0);
+    Vec3 r_perpendicular = scalar_mult_vec3(ri, vec3_add(uv, scalar_mult_vec3(cos_theta, n)));
+    Vec3 r_parallel = scalar_mult_vec3(-sqrt(fabs(1.0 - vec3_len_pow2(r_perpendicular))), n);
+    return vec3_add(r_perpendicular, r_parallel);
+}
+
 Vec3 vec3_hadamard(Vec3 a, Vec3 b) {
     return (Vec3){a.x*b.x, a.y*b.y, a.z*b.z};
 }
@@ -254,11 +266,11 @@ typedef struct {
 } Lambertian;
 
 bool scatter_lambertian(void *data, Ray r, HitRecord *hrec, Vec3 *attenuation, Ray *scattered) {
-	Lambertian *mat = (Lambertian*)data;
+	Lambertian *this = (Lambertian*)data;
 	Vec3 dir = vec3_add(hrec->normal, vec3_rand_norm());
 	if (vec3_near_zero(dir)) dir = hrec->normal;
 	*scattered = (Ray){hrec->p, dir};
-	*attenuation = mat->albedo;
+	*attenuation = this->albedo;
 	return 1; 
 }
 
@@ -268,12 +280,39 @@ typedef struct {
 } Metal;
 
 bool scatter_metal(void *data, Ray r, HitRecord *hrec, Vec3 *attenuation, Ray *scattered) {
-	Metal *mat = (Metal*)data;
+	Metal *this = (Metal*)data;
 	Vec3 reflected = vec3_reflect(r.direction, hrec->normal);
-    reflected = vec3_add(vec3_normalize(reflected), scalar_mult_vec3(mat->roughness, vec3_rand_norm()));
+    reflected = vec3_add(vec3_normalize(reflected), scalar_mult_vec3(this->roughness, vec3_rand_norm()));
 	*scattered = (Ray){hrec->p, reflected};
-	*attenuation = mat->albedo;
+	*attenuation = this->albedo;
 	return vec3_dot(scattered->direction, hrec->normal) > 0;
+}
+
+typedef struct {
+	double refraction_index;
+} Dielectric;
+
+double reflectance(double cos, double ri) {
+    double r0 = (1 - ri) / (1 + ri);
+    r0 = r0*r0;
+    return r0 + (1-r0)*pow(1-cos, 5);
+}
+bool scatter_dielectric(void *data, Ray r, HitRecord *hrec, Vec3 *attenuation, Ray *scattered) {
+    Dielectric *this = (Dielectric*)data;
+    *attenuation = (Vec3){1, 1, 1};
+    double ri = hrec->front_face? (1.0/this->refraction_index) : this->refraction_index;
+    Vec3 unit_direction = vec3_normalize(r.direction);
+    double cos_theta = fmin(vec3_dot(
+        scalar_mult_vec3(-1, unit_direction),
+        hrec->normal
+    ), 1.0);
+    double sin_theta = sqrt(1.0 - cos_theta*cos_theta);
+    bool cant_refract = (ri * sin_theta) > 1.0;
+    Vec3 direction;
+    if (cant_refract || reflectance(cos_theta, ri) > dranddoub()) direction = vec3_reflect(unit_direction, hrec->normal);
+    else direction = vec3_refract(unit_direction, hrec->normal, ri);
+    *scattered = (Ray){hrec->p, direction};
+    return true;
 }
 
 
@@ -282,6 +321,12 @@ typedef struct {
     double radius;
     Material mat;
 } Sphere;
+
+typedef struct {
+    Vec3 min;
+    Vec3 max;
+    Material mat;
+} Box;
 
 
 typedef struct {
@@ -308,7 +353,7 @@ Camera cam_init() {
     cam.img_height = (int)(cam.img_width / cam.aspect_ratio);
     if (cam.img_height < 1) cam.img_height = 1;
 
-    cam.lookfrom = (Vec3){0, 0, 0};
+    cam.lookfrom = (Vec3){2, 0, -1};
     cam.lookat = (Vec3){0, 0, -1};
     cam.lookup = (Vec3){0, -1, 0};
 
@@ -445,12 +490,12 @@ void set_face_normal(HitRecord *hrec, Ray r, Vec3 outward_normal) {
 }
 
 bool hit_sphere(void *data, Ray r, Range t, HitRecord *hrec, Material *mat) {
-    Sphere *sphere = (Sphere*)data;
+    Sphere *this = (Sphere*)data;
 
     double a = vec3_len_pow2(r.direction);
-    Vec3 oc = vec3_sub(sphere->center, r.origin);
+    Vec3 oc = vec3_sub(this->center, r.origin);
     double h = vec3_dot(r.direction, oc);
-    double c = vec3_len_pow2(oc) - sphere->radius*sphere->radius;
+    double c = vec3_len_pow2(oc) - this->radius*this->radius;
     double discriminant = h*h - a*c;
 
     if (discriminant < 0) return false;
@@ -465,11 +510,16 @@ bool hit_sphere(void *data, Ray r, Range t, HitRecord *hrec, Material *mat) {
 
     hrec->t = root;
     hrec->p = at(r, hrec->t);
-    Vec3 outward_normal = vec3_div_scalar(vec3_sub(hrec->p, sphere->center), sphere->radius);
+    Vec3 outward_normal = vec3_div_scalar(vec3_sub(hrec->p, this->center), this->radius);
     set_face_normal(hrec, r, outward_normal);
-    *mat = sphere->mat;
+    *mat = this->mat;
 
     return true;
+}
+
+bool hit_box(void *data, Ray r, Range t, HitRecord *hrec, Material *mat) {
+    // TODO
+    return false;
 }
 
 int main() {
@@ -479,7 +529,9 @@ int main() {
 	Lambertian diffb = {(Vec3){0, 0, 1}};
 	Lambertian diffg = {(Vec3){0, 1, 0}};
 
-	Metal met = {(Vec3){0.9, 0.9, 0.9}, 0.3};
+    Dielectric glass = {1.5};
+
+	Metal met = {(Vec3){0.9, 0.9, 0.9}, 0.15};
 
 	Sphere obj0 = {
 		(Vec3){-1, 0, -1}, 0.5, LAMBERTIAN2M(diffr)
@@ -488,7 +540,7 @@ int main() {
 		(Vec3){0, -100.5, -1}, 100, LAMBERTIAN2M(diffb)
 	};
 	Sphere obj3 = {
-		(Vec3){1, 0, -1}, 0.5, LAMBERTIAN2M(diffg)
+		(Vec3){1, 0, -1}, 0.5, DIELECTRIC2M(glass)
 	};
 	Sphere obj2 = {
 		(Vec3){0, 0.25, -1.4}, 0.5, METAL2M(met)
