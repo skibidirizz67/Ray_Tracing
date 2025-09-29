@@ -7,87 +7,38 @@
 #define PI 3.1415926535897932385
 
 #define SPHERE2H(obj) ((Hittable){(void*)&obj, &hit_sphere})
-#define BOX2H(obj) ((Hittable){(void*)&obj, &hit_box})
 
-#define LAMBERTIAN2M(mat) ((Material){(void*)&mat, &scatter_lambertian})
-#define METAL2M(mat) ((Material){(void*)&mat, &scatter_metal})
-#define DIELECTRIC2M(mat) ((Material){(void*)&mat, &scatter_dielectric})
+#define LAMBERTIAN2M(mat) ((Material){(void*)&mat, &scatter_lambertian, &emitted_default})
+#define LAMBERTIANL2M(mat) ((Material){(void*)&mat, &scatter_lambertian, &emitted_lambertian})
+#define METAL2M(mat) ((Material){(void*)&mat, &scatter_metal, &emitted_default})
+#define DIELECTRIC2M(mat) ((Material){(void*)&mat, &scatter_dielectric, &emitted_default})
 
 #define ASPECT_RATIO (16.0 / 9.0)
 #define VFOV 60
-
-#define TESTP
-#ifdef TESTP
-#define IMG_WIDTH 640
-#define SAMPLES_PER_PIXEL 4
-#define MAX_DEPTH 6
-#endif
-#ifdef MIDP
-#define IMG_WIDTH 1080
-#define SAMPLES_PER_PIXEL 32
-#define MAX_DEPTH 16
-#endif
-#ifdef HIGHP
-#define IMG_WIDTH 1920
-#define SAMPLES_PER_PIXEL 128
-#define MAX_DEPTH 64
-#endif
-#ifdef ULTRAP
-#define IMG_WIDTH 2560
-#define SAMPLES_PER_PIXEL 1024
-#define MAX_DEPTH 256
-#endif
-#ifdef CUSTOMP
-#define IMG_WIDTH 800
+#define IMG_WIDTH 480
 #define SAMPLES_PER_PIXEL 64
-#define MAX_DEPTH 16
-#endif
+#define MAX_DEPTH 64
 
-
-double dranddoub() {
-    return rand() / (RAND_MAX + 1.0);
-}
-double randdoub(double min, double max) {
-    return min + (max-min)*dranddoub();
-}
-
-double d2r(double deg) {
-    return deg * PI / 180.0;
-}
-
-
+static inline double dranddoub() { return rand() / (RAND_MAX + 1.0); }
+static inline double randdoub(double min, double max) { return min + (max-min)*dranddoub(); }
+static inline double d2r(double deg) { return deg * PI / 180.0; }
 typedef struct {
     union {
         struct { double x, y, z; };
         struct { double r, g, b; };
     };
 } Vec3;
-
-Vec3 vec3_add(Vec3 a, Vec3 b) {
-    return (Vec3){a.x + b.x, a.y + b.y, a.z + b.z};
-}
-
-Vec3 vec3_add_scalar(Vec3 v, double s) {
-    return (Vec3){v.x + s, v.y + s, v.z + s};
-}
-
-Vec3 vec3_sub(Vec3 a, Vec3 b) {
-    return (Vec3){a.x - b.x, a.y - b.y, a.z - b.z};
-}
-
-Vec3 scalar_mult_vec3(double s, Vec3 v) {
-    return (Vec3){v.x * s, v.y * s, v.z * s};
-}
-
-double vec3_len_pow2(Vec3 v) {
-    return v.x*v.x + v.y*v.y + v.z*v.z;
-}
-
-double vec3_len(Vec3 v) {
-    return sqrt(v.x*v.x + v.y*v.y + v.z*v.z);
-}
-
-Vec3 vec3_normalize(Vec3 v) {
+static inline Vec3 vec3_add(Vec3 a, Vec3 b) { return (Vec3){a.x + b.x, a.y + b.y, a.z + b.z}; }
+static inline Vec3 vec3_add_scalar(Vec3 v, double s) { return (Vec3){v.x + s, v.y + s, v.z + s}; }
+static inline Vec3 vec3_sub(Vec3 a, Vec3 b) { return (Vec3){a.x - b.x, a.y - b.y, a.z - b.z}; }
+static inline Vec3 vec3_hadamard(Vec3 a, Vec3 b) { return (Vec3){a.x*b.x, a.y*b.y, a.z*b.z}; }
+static inline double vec3_dot(Vec3 a, Vec3 b) { return a.x*b.x + a.y*b.y + a.z*b.z; }
+static inline Vec3 vec3_cross(Vec3 a, Vec3 b) { return (Vec3){a.y*b.z-a.z*b.y, a.z*b.x-a.x*b.z, a.x*b.y-a.y*b.x}; }
+static inline Vec3 scalar_mult_vec3(double s, Vec3 v) { return (Vec3){v.x * s, v.y * s, v.z * s}; }
+static inline Vec3 vec3_div_scalar(Vec3 v, double s) { return (s==0.0)? (Vec3){0} : (Vec3){v.x/s, v.y/s, v.z/s}; }
+static inline double vec3_len_pow2(Vec3 v) { return v.x*v.x + v.y*v.y + v.z*v.z; }
+static inline double vec3_len(Vec3 v) { return sqrt(v.x*v.x + v.y*v.y + v.z*v.z); }
+static inline Vec3 vec3_normalize(Vec3 v) {
     Vec3 r = {0.0, 0.0, 0.0};
     double len = vec3_len(v);
     if (len > 0.0) {
@@ -97,87 +48,33 @@ Vec3 vec3_normalize(Vec3 v) {
     }
     return r;
 }
-
-Vec3 vec3_div_scalar(Vec3 v, double s) {
-    Vec3 r = {0.0, 0.0, 0.0};
-    if (s != 0.0) {
-        r.x = v.x / s;
-        r.y = v.y / s;
-        r.z = v.z / s;
-    }
-    return r;
-}
-
-double vec3_dot(Vec3 a, Vec3 b) {
-    return a.x*b.x + a.y*b.y + a.z*b.z;
-}
-
-Vec3 vec3_cross(Vec3 a, Vec3 b) {
-    return (Vec3){
-        a.y*b.z - a.z*b.y,
-        a.z*b.x - a.x*b.z,
-        a.x*b.y - a.y*b.x
-    };
-}
-
-bool vec3_near_zero(Vec3 v) {
-    return (fabs(v.x) < 1e-8) && (fabs(v.y) < 1e-8) && (fabs(v.z) < 1e8);
-}
-
-Vec3 vec3_drandom() {
-    return (Vec3){dranddoub(), dranddoub(), dranddoub()};
-}
-Vec3 vec3_random(double min, double max) {
-    return (Vec3){randdoub(min,max), randdoub(min,max), randdoub(min,max)};
-}
-
-Vec3 vec3_rand_norm() {
-    while (true) {
-        Vec3 p = vec3_random(-1, 1);
+static inline bool vec3_near_zero(Vec3 v) { return (fabs(v.x) < 1e-8) && (fabs(v.y) < 1e-8) && (fabs(v.z) < 1e-8); }
+static inline Vec3 vec3_random(double min, double max) { return (Vec3){randdoub(min,max), randdoub(min,max), randdoub(min,max)}; }
+static inline Vec3 vec3_drandom() { return (Vec3){dranddoub(), dranddoub(), dranddoub()}; }
+static inline Vec3 vec3_rand_norm() {
+    for (;;) {
+        Vec3 p = { randdoub(-1,1), randdoub(-1,1), randdoub(-1,1) };
         double len2 = vec3_len_pow2(p);
-        if (1e-160 < len2 && len2 <= 1) return vec3_div_scalar(p, sqrt(len2));
+        if (len2 > 1e-12 && len2 <= 1.0) return vec3_div_scalar(p, sqrt(len2));
     }
 }
-
-Vec3 vec3_random_on_hemisphere(Vec3 normal) {
-    Vec3 on_unit_sphere = vec3_rand_norm();
-    if (vec3_dot(on_unit_sphere, normal) > 0.0) return on_unit_sphere;
-    else return scalar_mult_vec3(-1.0, on_unit_sphere);
+static inline Vec3 vec3_random_on_hemisphere(Vec3 normal) {
+    Vec3 v = vec3_rand_norm();
+    return (vec3_dot(v, normal) > 0.0)? v : scalar_mult_vec3(-1.0, v);
 }
-
-Vec3 vec3_reflect(Vec3 v, Vec3 n) {
-	return vec3_sub(v, scalar_mult_vec3(2*vec3_dot(v, n), n));	
-}
-
-Vec3 vec3_refract(Vec3 uv, Vec3 n, double ri) {
-    double cos_theta = fmin(vec3_dot(
-        scalar_mult_vec3(-1, uv),
-        n
-    ), 1.0);
-    Vec3 r_perpendicular = scalar_mult_vec3(ri, vec3_add(uv, scalar_mult_vec3(cos_theta, n)));
-    Vec3 r_parallel = scalar_mult_vec3(-sqrt(fabs(1.0 - vec3_len_pow2(r_perpendicular))), n);
-    return vec3_add(r_perpendicular, r_parallel);
-}
-
-Vec3 vec3_hadamard(Vec3 a, Vec3 b) {
-    return (Vec3){a.x*b.x, a.y*b.y, a.z*b.z};
+static inline Vec3 vec3_reflect(Vec3 v, Vec3 n) { return vec3_sub(v, scalar_mult_vec3(2*vec3_dot(v, n), n)); }
+static inline Vec3 vec3_refract(Vec3 uv, Vec3 n, double ri) {
+    double cos_theta = fmin(vec3_dot(scalar_mult_vec3(-1.0, uv), n), 1.0);
+    Vec3 r_perp = scalar_mult_vec3(ri, vec3_add(uv, scalar_mult_vec3(cos_theta, n)));
+    double len2 = vec3_len_pow2(r_perp);
+    double under = 1.0 - len2;
+    double root = (under > 0.0) ? -sqrt(under) : 0.0;
+    Vec3 r_par = scalar_mult_vec3(root, n);
+    return vec3_add(r_perp, r_par);
 }
 
 
-
-typedef struct {
-    double min, max;
-} Range;
-
-#define range_size(r) (r.max - r.min)
-#define range_contains(r, x) (r.min <= x && x <= r.max)
-#define range_surrounds(r, x) (r.min < x && x < r.max)
-
-double clamp(Range r, double x) {
-    if (x < r.min) return r.min;
-    if (x > r.max) return r.max;
-    return x;
-}
+static inline double clamp(double n, double min, double max) { return (n < min)? min : ((n > max)? max : n); }
 
 
 
@@ -195,18 +92,17 @@ typedef struct {
 typedef struct {
 	void *data;
 	bool (*scatter)(void *data, Ray r, HitRecord *hrec, Vec3 *atten, Ray *scattered);
+    Vec3 (*emitted)(void *data);
 } Material;
 
 typedef struct {
     void *data;
-    bool (*hit)(void *data, Ray r, Range t, HitRecord *hrec, Material *mat);
+    bool (*hit)(void *data, Ray r, double tmin, double tmax, HitRecord *hrec, Material *mat);
 } Hittable;
-
 typedef struct {
     Hittable *hittables;
     size_t size, capacity;
 } HittableList;
-
 HittableList hlist_init() {
     HittableList hlist = {0};
     hlist.hittables = (Hittable*)calloc(1, sizeof(Hittable));
@@ -243,14 +139,14 @@ void hlist_destroy(HittableList *hlist) {
     free(hlist->hittables);
     hlist = (HittableList*){0};
 }
-bool hlist_hitall(HittableList *hlist, Ray r, Range t, HitRecord *hrec, Material *mat) {
+bool hlist_hitall(HittableList *hlist, Ray r, double tmin, double tmax, HitRecord *hrec, Material *mat) {
     HitRecord temp_rec = {0};
     bool hit_any = false;
-    double closest = t.max;
+    double closest = tmax;
 
     for (size_t i = 0; i < hlist->size; i++) {
         if (hlist->hittables[i].data == NULL) continue;
-        if (hlist->hittables[i].hit(hlist->hittables[i].data, r, (Range){t.min, closest}, &temp_rec, mat)) {
+        if (hlist->hittables[i].hit(hlist->hittables[i].data, r, tmin, closest, &temp_rec, mat)) {
             *hrec = temp_rec;
             hit_any = true;
             closest = temp_rec.t;
@@ -264,21 +160,19 @@ bool hlist_hitall(HittableList *hlist, Ray r, Range t, HitRecord *hrec, Material
 typedef struct {
 	Vec3 albedo;
 } Lambertian;
-
 bool scatter_lambertian(void *data, Ray r, HitRecord *hrec, Vec3 *attenuation, Ray *scattered) {
 	Lambertian *this = (Lambertian*)data;
 	Vec3 dir = vec3_add(hrec->normal, vec3_rand_norm());
 	if (vec3_near_zero(dir)) dir = hrec->normal;
 	*scattered = (Ray){hrec->p, dir};
 	*attenuation = this->albedo;
-	return 1; 
+	return true; 
 }
 
 typedef struct {
 	Vec3 albedo;
     double roughness;
 } Metal;
-
 bool scatter_metal(void *data, Ray r, HitRecord *hrec, Vec3 *attenuation, Ray *scattered) {
 	Metal *this = (Metal*)data;
 	Vec3 reflected = vec3_reflect(r.direction, hrec->normal);
@@ -291,28 +185,45 @@ bool scatter_metal(void *data, Ray r, HitRecord *hrec, Vec3 *attenuation, Ray *s
 typedef struct {
 	double refraction_index;
 } Dielectric;
-
-double reflectance(double cos, double ri) {
-    double r0 = (1 - ri) / (1 + ri);
-    r0 = r0*r0;
-    return r0 + (1-r0)*pow(1-cos, 5);
+double rSchlick(Vec3 incident, Vec3 normal, double n1, double n2) {
+    double r0 = (n1 - n2) / (n1 + n2);
+    r0 *= r0;
+    
+    float x = 1.0 + vec3_dot(normal, incident);
+    return clamp(r0 + (1.0-r0)*x*x*x*x*x, 0, 1);
 }
+// #TODO: blend two rays instead of picking random
 bool scatter_dielectric(void *data, Ray r, HitRecord *hrec, Vec3 *attenuation, Ray *scattered) {
     Dielectric *this = (Dielectric*)data;
-    *attenuation = (Vec3){1, 1, 1};
-    double ri = hrec->front_face? (1.0/this->refraction_index) : this->refraction_index;
+    *attenuation = (Vec3){1.0, 1.0, 1.0};
+    double n1 = hrec->front_face? 1.0 : this->refraction_index;
+    double n2 = hrec->front_face? this->refraction_index : 1.0;
+    double eta = n1 / n2;
     Vec3 unit_direction = vec3_normalize(r.direction);
     double cos_theta = fmin(vec3_dot(
         scalar_mult_vec3(-1, unit_direction),
         hrec->normal
     ), 1.0);
     double sin_theta = sqrt(1.0 - cos_theta*cos_theta);
-    bool cant_refract = (ri * sin_theta) > 1.0;
+    bool cant_refract = (eta * sin_theta) > 1.0;
     Vec3 direction;
-    if (cant_refract || reflectance(cos_theta, ri) > dranddoub()) direction = vec3_reflect(unit_direction, hrec->normal);
-    else direction = vec3_refract(unit_direction, hrec->normal, ri);
+    double reflect_prob = rSchlick(unit_direction, hrec->normal, n1, n2);
+    if (cant_refract || reflect_prob > dranddoub()) direction = vec3_reflect(unit_direction, hrec->normal);
+    else direction = vec3_refract(unit_direction, hrec->normal, eta);
     *scattered = (Ray){hrec->p, direction};
     return true;
+}
+
+
+typedef struct {
+    Vec3 albedo;
+} LambertianLight;
+Vec3 emitted_default(void *data) {
+    return (Vec3){0.0, 0.0, 0.0};
+}
+Vec3 emitted_lambertian(void *data) {
+    LambertianLight *this = (LambertianLight*)data;
+    return this->albedo;
 }
 
 
@@ -321,12 +232,6 @@ typedef struct {
     double radius;
     Material mat;
 } Sphere;
-
-typedef struct {
-    Vec3 min;
-    Vec3 max;
-    Material mat;
-} Box;
 
 
 typedef struct {
@@ -353,7 +258,7 @@ Camera cam_init() {
     cam.img_height = (int)(cam.img_width / cam.aspect_ratio);
     if (cam.img_height < 1) cam.img_height = 1;
 
-    cam.lookfrom = (Vec3){2, 0, -1};
+    cam.lookfrom = (Vec3){0, 0, 0};
     cam.lookat = (Vec3){0, 0, -1};
     cam.lookup = (Vec3){0, -1, 0};
 
@@ -373,7 +278,7 @@ Camera cam_init() {
 
     Vec3 viewport_upper_left = vec3_sub(
         vec3_sub(
-            vec3_sub(cam.lookfrom, scalar_mult_vec3(focal_len, cam.w)), // todo camera direction
+            vec3_sub(cam.lookfrom, scalar_mult_vec3(focal_len, cam.w)),
             vec3_div_scalar(viewport_u, 2)
         ),
         vec3_div_scalar(viewport_v, 2)
@@ -387,25 +292,20 @@ Camera cam_init() {
 }
 
 Vec3 ray_color(Ray r, int depth, HittableList *hlist) {
-    if (depth <= 0) return (Vec3){0};
+    if (depth <= 0) return (Vec3){0.0, 0.0, 0.0};
 
     HitRecord hrec = {0};
     Material mat;
-    if (hlist_hitall(hlist, r, (Range){0.001, INFINITY}, &hrec, &mat)) {
-        Ray scattered;
-        Vec3 attenuation;
-        if (mat.scatter(mat.data, r, &hrec, &attenuation, &scattered)) {
-            return vec3_hadamard(attenuation, ray_color(scattered, depth-1, hlist));
-        }
-        return (Vec3){0, 0, 0};
-    }
+    if (!hlist_hitall(hlist, r, 0.001, INFINITY, &hrec, &mat)) return (Vec3){0.005, 0.005, 0.005};
 
-    Vec3 unit_direction = vec3_normalize(r.direction);
-    double a = 0.5*(unit_direction.y + 1.0);
-    return vec3_add(
-        scalar_mult_vec3((1.0-a), (Vec3){1, 1, 1}),
-        scalar_mult_vec3(a, (Vec3){0.5, 0.7, 1.0})
-    );
+    Ray scattered;
+    Vec3 attenuation;
+    Vec3 color_emission = mat.emitted(mat.data);
+    if (!mat.scatter(mat.data, r, &hrec, &attenuation, &scattered)) return color_emission;
+
+    Vec3 color_scatter = vec3_hadamard(attenuation, ray_color(scattered, depth-1, hlist));
+
+    return vec3_add(color_emission, color_scatter);
 }
 
 void print_progress(int bar_width, int progress, int total) {
@@ -433,10 +333,9 @@ void write_pixel(Vec3 pixel) {
     double g = linear_to_gamma(pixel.g);
     double b = linear_to_gamma(pixel.b);
 
-    Range intensity = {0.0, 0.999};
-    int rb = (int)(256 * clamp(intensity, r));
-    int gb = (int)(256 * clamp(intensity, g));
-    int bb = (int)(256 * clamp(intensity, b));
+    int rb = (int)(256 * clamp(r, 0, 0.999));
+    int gb = (int)(256 * clamp(g, 0, 0.999));
+    int bb = (int)(256 * clamp(b, 0, 0.999));
 
     printf("%d %d %d\n", rb, gb, bb);
 }
@@ -462,7 +361,6 @@ void render(Camera *cam, HittableList *hlist) {
     fprintf(stderr, "Rendering %dx%d | %d samples | %d depth\n", cam->img_width, cam->img_height, cam->samples_per_pixel, cam->max_depth);
 
     printf("P3\n%d %d\n255\n", cam->img_width, cam->img_height);
-
     for (int y = 0; y < cam->img_height; y++) {
         print_progress(25, y, cam->img_height);
         for (int x = 0; x < cam->img_width; x++) {
@@ -480,16 +378,16 @@ void render(Camera *cam, HittableList *hlist) {
 
 
 
-Vec3 at(Ray r, double t) {
+static inline Vec3 at(Ray r, double t) {
     return vec3_add(r.origin, scalar_mult_vec3(t, r.direction));
 }
 
-void set_face_normal(HitRecord *hrec, Ray r, Vec3 outward_normal) {
+static inline void set_face_normal(HitRecord *hrec, Ray r, Vec3 outward_normal) {
     hrec->front_face = vec3_dot(r.direction, outward_normal) < 0;
     hrec->normal = hrec->front_face? outward_normal : scalar_mult_vec3(-1, outward_normal);
 }
 
-bool hit_sphere(void *data, Ray r, Range t, HitRecord *hrec, Material *mat) {
+bool hit_sphere(void *data, Ray r, double tmin, double tmax, HitRecord *hrec, Material *mat) {
     Sphere *this = (Sphere*)data;
 
     double a = vec3_len_pow2(r.direction);
@@ -503,9 +401,9 @@ bool hit_sphere(void *data, Ray r, Range t, HitRecord *hrec, Material *mat) {
     double sqrtd = sqrt(discriminant);
 
     double root = (h - sqrtd) / a;
-    if (!range_surrounds(t, root)) {
+    if (!(tmin < root && root < tmax)) {
         root = (h + sqrtd) / a;
-        if (!range_surrounds(t, root)) return false;
+        if (!(tmin < root && root < tmax)) return false;
     }
 
     hrec->t = root;
@@ -517,11 +415,6 @@ bool hit_sphere(void *data, Ray r, Range t, HitRecord *hrec, Material *mat) {
     return true;
 }
 
-bool hit_box(void *data, Ray r, Range t, HitRecord *hrec, Material *mat) {
-    // TODO
-    return false;
-}
-
 int main() {
     srand(time(NULL));
 
@@ -529,9 +422,12 @@ int main() {
 	Lambertian diffb = {(Vec3){0, 0, 1}};
 	Lambertian diffg = {(Vec3){0, 1, 0}};
 
-    Dielectric glass = {1.5};
+    Dielectric glass = {1.33};
+    Dielectric air = {1/1.33};
 
-	Metal met = {(Vec3){0.9, 0.9, 0.9}, 0.15};
+	Metal met = {(Vec3){0.8, 0.8, 0.8}, 0.1};
+
+    LambertianLight light = {(Vec3){15.0, 15.0, 15.0}};
 
 	Sphere obj0 = {
 		(Vec3){-1, 0, -1}, 0.5, LAMBERTIAN2M(diffr)
@@ -539,11 +435,17 @@ int main() {
 	Sphere obj1 = {
 		(Vec3){0, -100.5, -1}, 100, LAMBERTIAN2M(diffb)
 	};
+    Sphere obj2 = {
+		(Vec3){0, 0.25, -1.4}, 0.5, METAL2M(met)
+	};
 	Sphere obj3 = {
 		(Vec3){1, 0, -1}, 0.5, DIELECTRIC2M(glass)
 	};
-	Sphere obj2 = {
-		(Vec3){0, 0.25, -1.4}, 0.5, METAL2M(met)
+    Sphere obj4 = {
+		(Vec3){1, 0, -1}, 0.4, DIELECTRIC2M(air)
+	};
+    Sphere obj5 = {
+		(Vec3){0.5, 1.0, 0}, 0.25, LAMBERTIANL2M(light)
 	};
 
     HittableList hlist = hlist_init();
@@ -551,6 +453,9 @@ int main() {
     hlist_push(&hlist, SPHERE2H(obj1));
     hlist_push(&hlist, SPHERE2H(obj2));
     hlist_push(&hlist, SPHERE2H(obj3));
+    hlist_push(&hlist, SPHERE2H(obj4));
+    hlist_push(&hlist, SPHERE2H(obj5));
+
 
     Camera cam = cam_init();
     render(&cam, &hlist);
