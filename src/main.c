@@ -7,17 +7,12 @@
 #define PI 3.1415926535897932385
 
 #define SPHERE2H(obj) ((Hittable){(void*)&obj, &hit_sphere})
+#define QUAD2H(obj) ((Hittable){(void*)&obj, &hit_quad})
 
-#define LAMBERTIAN2M(mat) ((Material){(void*)&mat, &scatter_lambertian, &emitted_default})
-#define LAMBERTIANL2M(mat) ((Material){(void*)&mat, &scatter_lambertian, &emitted_lambertian})
-#define METAL2M(mat) ((Material){(void*)&mat, &scatter_metal, &emitted_default})
-#define DIELECTRIC2M(mat) ((Material){(void*)&mat, &scatter_dielectric, &emitted_default})
-
-#define ASPECT_RATIO (16.0 / 9.0)
-#define VFOV 60
-#define IMG_WIDTH 480
-#define SAMPLES_PER_PIXEL 64
-#define MAX_DEPTH 64
+#define LAMBERTIAN2M(mat) ((Material){(void*)&(mat), &scatter_lambertian, &emitted_default})
+#define LAMBERTIANL2M(mat) ((Material){(void*)&(mat), &scatter_lambertian, &emitted_lambertian})
+#define METAL2M(mat) ((Material){(void*)&(mat), &scatter_metal, &emitted_default})
+#define DIELECTRIC2M(mat) ((Material){(void*)&(mat), &scatter_dielectric, &emitted_default})
 
 static inline double dranddoub() { return rand() / (RAND_MAX + 1.0); }
 static inline double randdoub(double min, double max) { return min + (max-min)*dranddoub(); }
@@ -73,7 +68,6 @@ static inline Vec3 vec3_refract(Vec3 uv, Vec3 n, double ri) {
     return vec3_add(r_perp, r_par);
 }
 
-
 static inline double clamp(double n, double min, double max) { return (n < min)? min : ((n > max)? max : n); }
 
 
@@ -88,6 +82,10 @@ typedef struct {
 typedef struct {
     Vec3 origin, direction;
 } Ray;
+
+static inline Vec3 at(Ray r, double t) {
+    return vec3_add(r.origin, scalar_mult_vec3(t, r.direction));
+}
 
 typedef struct {
 	void *data;
@@ -232,6 +230,82 @@ typedef struct {
     double radius;
     Material mat;
 } Sphere;
+static inline void set_face_normal(HitRecord *hrec, Ray r, Vec3 outward_normal) {
+    hrec->front_face = vec3_dot(r.direction, outward_normal) < 0;
+    hrec->normal = hrec->front_face? outward_normal : scalar_mult_vec3(-1, outward_normal);
+}
+bool hit_sphere(void *data, Ray r, double tmin, double tmax, HitRecord *hrec, Material *mat) {
+    Sphere *this = (Sphere*)data;
+
+    double a = vec3_len_pow2(r.direction);
+    Vec3 oc = vec3_sub(this->center, r.origin);
+    double h = vec3_dot(r.direction, oc);
+    double c = vec3_len_pow2(oc) - this->radius*this->radius;
+    double discriminant = h*h - a*c;
+
+    if (discriminant < 0) return false;
+    
+    double sqrtd = sqrt(discriminant);
+
+    double root = (h - sqrtd) / a;
+    if (!(tmin < root && root < tmax)) {
+        root = (h + sqrtd) / a;
+        if (!(tmin < root && root < tmax)) return false;
+    }
+
+    hrec->t = root;
+    hrec->p = at(r, hrec->t);
+    Vec3 outward_normal = vec3_div_scalar(vec3_sub(hrec->p, this->center), this->radius);
+    set_face_normal(hrec, r, outward_normal);
+    *mat = this->mat;
+
+    return true;
+}
+
+typedef struct {
+    Vec3 Q;
+    Vec3 u, v, w;
+    Vec3 normal;
+    double D;
+    Material mat;
+} Quad;
+void quad_init(Quad *quad) {
+    Vec3 n = vec3_cross(quad->u, quad->v);
+    quad->normal = vec3_normalize(n);
+    quad->D = vec3_dot(quad->normal, quad->Q);
+    quad->w = scalar_mult_vec3(1.0/vec3_dot(n, n), n);
+}
+bool is_interior(double a, double b, HitRecord *hrec) {
+    if (!(a >= 0 && a <= 1) || !(b >= 0 && b <= 1)) return false;
+
+    //hrec->u = a;
+    //hrec->v = b;
+    return true;
+}
+bool hit_quad(void *data, Ray r, double tmin, double tmax, HitRecord *hrec, Material *mat) {
+    Quad *this = (Quad*)data;
+
+    double denom = vec3_dot(this->normal, r.direction);
+
+    if (fabs(denom) < 1e-8) return false;
+
+    double t = (this->D - vec3_dot(this->normal, r.origin)) / denom;
+    if (!(t >= tmin && t <= tmax)) return false;
+
+    Vec3 intersection = at(r, t);
+    Vec3 planar_hitpt_vector = vec3_sub(intersection, this->Q);
+    double alpha = vec3_dot(this->w, vec3_cross(planar_hitpt_vector, this->v));
+    double beta = vec3_dot(this->w, vec3_cross(this->u, planar_hitpt_vector));
+
+    if (!is_interior(alpha, beta, hrec)) return false;
+
+    hrec->t = t;
+    hrec->p = intersection;
+    *mat = this->mat;
+    set_face_normal(hrec, r, this->normal);
+
+    return true;
+}
 
 
 typedef struct {
@@ -243,67 +317,55 @@ typedef struct {
     Vec3 u, v, w;
     Vec3 pixel00_loc;
     Vec3 pixel_delta_u, pixel_delta_v;
+    Vec3 background;
 } Camera;
 
-Camera cam_init() {
-    Camera cam = {0};
+void cam_init(Camera *cam) {
+    cam->img_height = (int)(cam->img_width / cam->aspect_ratio);
+    if (cam->img_height < 1) cam->img_height = 1;
 
-    cam.aspect_ratio = ASPECT_RATIO;
-    cam.vfov = VFOV;
-    cam.img_width = IMG_WIDTH;
-    cam.samples_per_pixel = SAMPLES_PER_PIXEL;
-    cam.pixel_samples_scale = 1.0 / cam.samples_per_pixel;
-    cam.max_depth = MAX_DEPTH;
+    cam->pixel_samples_scale = 1.0 / cam->samples_per_pixel;
 
-    cam.img_height = (int)(cam.img_width / cam.aspect_ratio);
-    if (cam.img_height < 1) cam.img_height = 1;
+    double focal_len = vec3_len(vec3_sub(cam->lookfrom, cam->lookat));
+    double viewport_height = 2.0 * tan(d2r(cam->vfov)/2.0) * focal_len;
+    double viewport_width = viewport_height * ((double)cam->img_width / cam->img_height);
 
-    cam.lookfrom = (Vec3){0, 0, 0};
-    cam.lookat = (Vec3){0, 0, -1};
-    cam.lookup = (Vec3){0, -1, 0};
+    cam->w = vec3_normalize(vec3_sub(cam->lookfrom, cam->lookat));
+    cam->u = vec3_normalize(vec3_cross(cam->lookup, cam->w));
+    cam->v = vec3_cross(cam->w, cam->u);
 
-    double focal_len = vec3_len(vec3_sub(cam.lookfrom, cam.lookat));
-    double viewport_height = 2.0 * tan(d2r(cam.vfov)/2.0) * focal_len;
-    double viewport_width = viewport_height * ((double)cam.img_width / cam.img_height);
+    Vec3 viewport_u = scalar_mult_vec3(viewport_width, cam->u);
+    Vec3 viewport_v = scalar_mult_vec3(viewport_height, cam->v);
 
-    cam.w = vec3_normalize(vec3_sub(cam.lookfrom, cam.lookat));
-    cam.u = vec3_normalize(vec3_cross(cam.lookup, cam.w));
-    cam.v = vec3_cross(cam.w, cam.u);
-
-    Vec3 viewport_u = scalar_mult_vec3(viewport_width, cam.u);
-    Vec3 viewport_v = scalar_mult_vec3(viewport_height, cam.v);
-
-    cam.pixel_delta_u = vec3_div_scalar(viewport_u, cam.img_width);
-    cam.pixel_delta_v = vec3_div_scalar(viewport_v, cam.img_height);
+    cam->pixel_delta_u = vec3_div_scalar(viewport_u, cam->img_width);
+    cam->pixel_delta_v = vec3_div_scalar(viewport_v, cam->img_height);
 
     Vec3 viewport_upper_left = vec3_sub(
         vec3_sub(
-            vec3_sub(cam.lookfrom, scalar_mult_vec3(focal_len, cam.w)),
+            vec3_sub(cam->lookfrom, scalar_mult_vec3(focal_len, cam->w)),
             vec3_div_scalar(viewport_u, 2)
         ),
         vec3_div_scalar(viewport_v, 2)
     );
-    cam.pixel00_loc = vec3_add(
+    cam->pixel00_loc = vec3_add(
         viewport_upper_left,
-        scalar_mult_vec3(0.5, vec3_add(cam.pixel_delta_u, cam.pixel_delta_v))
+        scalar_mult_vec3(0.5, vec3_add(cam->pixel_delta_u, cam->pixel_delta_v))
     );
-
-    return cam;
 }
 
-Vec3 ray_color(Ray r, int depth, HittableList *hlist) {
+Vec3 ray_color(Ray r, int depth, HittableList *hlist, Vec3 background) {
     if (depth <= 0) return (Vec3){0.0, 0.0, 0.0};
 
     HitRecord hrec = {0};
     Material mat;
-    if (!hlist_hitall(hlist, r, 0.001, INFINITY, &hrec, &mat)) return (Vec3){0.005, 0.005, 0.005};
+    if (!hlist_hitall(hlist, r, 0.001, INFINITY, &hrec, &mat)) return background;
 
     Ray scattered;
     Vec3 attenuation;
     Vec3 color_emission = mat.emitted(mat.data);
     if (!mat.scatter(mat.data, r, &hrec, &attenuation, &scattered)) return color_emission;
 
-    Vec3 color_scatter = vec3_hadamard(attenuation, ray_color(scattered, depth-1, hlist));
+    Vec3 color_scatter = vec3_hadamard(attenuation, ray_color(scattered, depth-1, hlist, background));
 
     return vec3_add(color_emission, color_scatter);
 }
@@ -367,7 +429,7 @@ void render(Camera *cam, HittableList *hlist) {
             Vec3 pixel_color = {0};
             for (int sample = 0; sample < cam->samples_per_pixel; sample++) {
                 Ray r = get_ray(cam, x, y);
-                pixel_color = vec3_add(pixel_color, ray_color(r, cam->max_depth, hlist));
+                pixel_color = vec3_add(pixel_color, ray_color(r, cam->max_depth, hlist, cam->background));
             }
             write_pixel(scalar_mult_vec3(cam->pixel_samples_scale, pixel_color));
         }
@@ -376,51 +438,75 @@ void render(Camera *cam, HittableList *hlist) {
     fprintf(stderr, "\nDone.\n");
 }
 
-
-
-static inline Vec3 at(Ray r, double t) {
-    return vec3_add(r.origin, scalar_mult_vec3(t, r.direction));
-}
-
-static inline void set_face_normal(HitRecord *hrec, Ray r, Vec3 outward_normal) {
-    hrec->front_face = vec3_dot(r.direction, outward_normal) < 0;
-    hrec->normal = hrec->front_face? outward_normal : scalar_mult_vec3(-1, outward_normal);
-}
-
-bool hit_sphere(void *data, Ray r, double tmin, double tmax, HitRecord *hrec, Material *mat) {
-    Sphere *this = (Sphere*)data;
-
-    double a = vec3_len_pow2(r.direction);
-    Vec3 oc = vec3_sub(this->center, r.origin);
-    double h = vec3_dot(r.direction, oc);
-    double c = vec3_len_pow2(oc) - this->radius*this->radius;
-    double discriminant = h*h - a*c;
-
-    if (discriminant < 0) return false;
-    
-    double sqrtd = sqrt(discriminant);
-
-    double root = (h - sqrtd) / a;
-    if (!(tmin < root && root < tmax)) {
-        root = (h + sqrtd) / a;
-        if (!(tmin < root && root < tmax)) return false;
-    }
-
-    hrec->t = root;
-    hrec->p = at(r, hrec->t);
-    Vec3 outward_normal = vec3_div_scalar(vec3_sub(hrec->p, this->center), this->radius);
-    set_face_normal(hrec, r, outward_normal);
-    *mat = this->mat;
-
-    return true;
-}
-
-int main() {
-    srand(time(NULL));
+void scene0() {
+    Camera cam;
+    cam.aspect_ratio = 16.0 / 9.0;
+    cam.vfov = 60;
+    cam.img_width = 480;
+    cam.samples_per_pixel = 32;
+    cam.max_depth = 6;
+    cam.lookfrom = (Vec3){0, 0, 0};
+    cam.lookat = (Vec3){0, 0, -1};
+    cam.lookup = (Vec3){0, -1, 0};
+    cam.background = (Vec3){0.7, 0.8, 1.0};
+    cam_init(&cam);
 
     Lambertian diffr = {(Vec3){1, 0, 0}};
 	Lambertian diffb = {(Vec3){0, 0, 1}};
 	Lambertian diffg = {(Vec3){0, 1, 0}};
+
+    Dielectric glass = {1.33};
+    Dielectric air = {1/1.33};
+
+	Metal met = {(Vec3){0.8, 0.8, 0.8}, 0.1};
+
+	Sphere obj0 = {
+		(Vec3){-1, 0, -1}, 0.5, LAMBERTIAN2M(diffr)
+	};
+	Sphere obj1 = {
+		(Vec3){0, -100.5, -1}, 100, LAMBERTIAN2M(diffb)
+	};
+    Sphere obj2 = {
+		(Vec3){0, 0.25, -1.4}, 0.5, METAL2M(met)
+	};
+	Sphere obj3 = {
+		(Vec3){1, 0, -1}, 0.5, DIELECTRIC2M(glass)
+	};
+    Sphere obj4 = {
+		(Vec3){1, 0, -1}, 0.4, DIELECTRIC2M(air)
+	};
+    Quad obj6 = {
+		(Vec3){-1, 0, -2}, (Vec3){3, 0, -2}, (Vec3){1, 4, -2}, .mat=LAMBERTIAN2M(diffg)
+	};
+    quad_init(&obj6);
+
+    HittableList hlist = hlist_init();
+    hlist_push(&hlist, SPHERE2H(obj0));
+    hlist_push(&hlist, SPHERE2H(obj1));
+    hlist_push(&hlist, SPHERE2H(obj2));
+    hlist_push(&hlist, SPHERE2H(obj3));
+    hlist_push(&hlist, SPHERE2H(obj4));
+    hlist_push(&hlist, QUAD2H(obj6));
+
+    render(&cam, &hlist);
+    hlist_destroy(&hlist);
+}
+
+void scene_light() {
+    Camera cam;
+    cam.aspect_ratio = 16.0 / 9.0;
+    cam.vfov = 60;
+    cam.img_width = 480;
+    cam.samples_per_pixel = 64;
+    cam.max_depth = 64;
+    cam.lookfrom = (Vec3){0, 0, 0};
+    cam.lookat = (Vec3){0, 0, -1};
+    cam.lookup = (Vec3){0, -1, 0};
+    cam.background = (Vec3){0, 0, 0};
+    cam_init(&cam);
+
+    Lambertian diffr = {(Vec3){1, 0, 0}};
+	Lambertian diffb = {(Vec3){0, 0, 1}};
 
     Dielectric glass = {1.33};
     Dielectric air = {1/1.33};
@@ -456,10 +542,96 @@ int main() {
     hlist_push(&hlist, SPHERE2H(obj4));
     hlist_push(&hlist, SPHERE2H(obj5));
 
-
-    Camera cam = cam_init();
     render(&cam, &hlist);
     
     hlist_destroy(&hlist);
+}
+
+void cornell_box() {
+    Camera cam;
+    cam.aspect_ratio = 1.0;
+    cam.vfov = 39;
+    cam.img_width = 180;
+    cam.samples_per_pixel = 50;
+    cam.max_depth = 64;
+    cam.background = (Vec3){0, 0, 0};
+    cam.lookfrom = (Vec3){278, 278, -800};
+    cam.lookat = (Vec3){278, 278, 0};
+    cam.lookup = (Vec3){0, -1, 0};
+    cam_init(&cam);
+
+    Material red = LAMBERTIAN2M(((Lambertian){(Vec3){0.65, 0.05, 0.05}}));
+    Material white = LAMBERTIAN2M(((Lambertian){(Vec3){0.73, 0.73, 0.73}}));
+    Material green = LAMBERTIAN2M(((Lambertian){(Vec3){0.12, 0.45, 0.15}}));
+    Material light = LAMBERTIANL2M(((LambertianLight){(Vec3){15, 15, 15}}));
+
+    Quad q0 = {(Vec3){555, 0, 0}, (Vec3){0, 555, 0}, (Vec3){0, 0, 555}, .mat=green};
+    Quad q1 = {(Vec3){0, 0, 0}, (Vec3){0, 555, 0}, (Vec3){0, 0, 555}, .mat=red};
+    Quad q2 = {(Vec3){343, 554, 332}, (Vec3){-130, 0, 0}, (Vec3){0, 0, -105}, .mat=light};
+    Quad q3 = {(Vec3){0, 0, 0}, (Vec3){555, 0, 0}, (Vec3){0, 0, 555}, .mat=white};
+    Quad q4 = {(Vec3){555, 555, 555}, (Vec3){-555, 0, 0}, (Vec3){0, 0, -555}, .mat=white};
+    Quad q5 = {(Vec3){0, 0, 555}, (Vec3){555, 0, 0}, (Vec3){0, 555, 0}, .mat=white};
+    quad_init(&q0);
+    quad_init(&q1);
+    quad_init(&q2);
+    quad_init(&q3);
+    quad_init(&q4);
+    quad_init(&q5);
+
+    HittableList hlist = hlist_init();
+    hlist_push(&hlist, QUAD2H(q0));
+    hlist_push(&hlist, QUAD2H(q1));
+    hlist_push(&hlist, QUAD2H(q2));
+    hlist_push(&hlist, QUAD2H(q3));
+    hlist_push(&hlist, QUAD2H(q4));
+    hlist_push(&hlist, QUAD2H(q5));
+
+    render(&cam, &hlist);
+    hlist_destroy(&hlist);
+}
+
+void glass_sphere() {
+    Camera cam;
+    cam.aspect_ratio = 16.0 / 9.0;
+    cam.vfov = 40;
+    cam.img_width = 600;
+    cam.samples_per_pixel = 128;
+    cam.max_depth = 6;
+    cam.lookfrom = (Vec3){0, 0, 1};
+    cam.lookat = (Vec3){0, 0, 0};
+    cam.lookup = (Vec3){0, -1, 0};
+    cam.background = (Vec3){0.0, 0.0, 0.0};
+    cam_init(&cam);
+
+    Lambertian ground = {(Vec3){0.0, 0.0, 0.9}};
+    Lambertian red = {(Vec3){0.9, 0.0, 0.0}};
+    Dielectric glass = {1.33};
+    LambertianLight light = {(Vec3){15.0, 15.0, 15.0}};
+
+    Sphere obj0 = {
+		(Vec3){0, -100.5, -1}, 100, LAMBERTIAN2M(ground)
+	};
+    Sphere obj1 = {
+        (Vec3){0, 0, -1}, 0.5, DIELECTRIC2M(glass)
+    };
+    Quad obj2 = {
+        (Vec3){3, 2, -1}, (Vec3){0, 0, -1}, (Vec3){1, -1, 0}, .mat=LAMBERTIANL2M(light)
+    };
+    quad_init(&obj2);
+
+    HittableList hlist = hlist_init();
+    hlist_push(&hlist, SPHERE2H(obj0));
+    hlist_push(&hlist, SPHERE2H(obj1));
+    hlist_push(&hlist, QUAD2H(obj2));
+
+    render(&cam, &hlist);
+    hlist_destroy(&hlist);
+}
+
+int main() {
+    srand(time(NULL));
+
+    scene0();
+    
     return 0;
 }
