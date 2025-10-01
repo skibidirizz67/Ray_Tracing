@@ -504,17 +504,12 @@ void scene_light() {
     cam.lookup = (Vec3){0, -1, 0};
     cam.background = (Vec3){0, 0, 0};
     cam_init(&cam);
-
     Lambertian diffr = {(Vec3){1, 0, 0}};
 	Lambertian diffb = {(Vec3){0, 0, 1}};
-
     Dielectric glass = {1.33};
     Dielectric air = {1/1.33};
-
 	Metal met = {(Vec3){0.8, 0.8, 0.8}, 0.1};
-
     LambertianLight light = {(Vec3){15.0, 15.0, 15.0}};
-
 	Sphere obj0 = {
 		(Vec3){-1, 0, -1}, 0.5, LAMBERTIAN2M(diffr)
 	};
@@ -533,7 +528,6 @@ void scene_light() {
     Sphere obj5 = {
 		(Vec3){0.5, 1.0, 0}, 0.25, LAMBERTIANL2M(light)
 	};
-
     HittableList hlist = hlist_init();
     hlist_push(&hlist, SPHERE2H(obj0));
     hlist_push(&hlist, SPHERE2H(obj1));
@@ -631,7 +625,7 @@ void glass_sphere() {
 int main() {
     srand(time(NULL));
 
-    scene0();
+    scene_light();
     
     return 0;
 }
